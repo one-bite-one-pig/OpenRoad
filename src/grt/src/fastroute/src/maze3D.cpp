@@ -700,7 +700,7 @@ float FastRouteCore::getMazeRouteCost3D(const int net_id,
   // Wire segment cost
   const float length = abs(to_x - from_x) + abs(to_y - from_y);
   const float wire_resistance_cost
-      = getWireCost(from_layer, length * tile_size_, net);
+      = getTimingWireCost(from_layer, length * tile_size_, net);
 
   return base_cost + wire_resistance_cost;
 }
@@ -719,7 +719,8 @@ void FastRouteCore::mazeRouteMSMDOrder3D(int expand,
   const int kHighDetourPenalty = 15;
 
   if (enable_resistance_aware_) {
-    updateSlacks();
+    // layerAssignment() selects timing-aware nets once. Keep that set fixed so
+    // the two 3D maze passes do not cumulatively expand the selected fraction.
     netpinOrderInc();
     // More flexible during repair stages
     setDetourPenalty(is_incremental_grt_ ? kLowDetourPenalty

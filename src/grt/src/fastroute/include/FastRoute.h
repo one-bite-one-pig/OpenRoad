@@ -605,6 +605,7 @@ class FastRouteCore
   float getViaResistance(int from_layer, int to_layer);
   int getWireCost(int layer, int length, FrNet* net);
   int getWireCapCost(int layer, int length, FrNet* net);
+  int getTimingWireCost(int layer, int length, FrNet* net);
   int getViaCost(int from_layer, int to_layer);
   float getResAwareScore(FrNet* net);
   void updateWorstMetrics(FrNet* net);
@@ -735,6 +736,7 @@ class FastRouteCore
   std::string congestion_file_name_;
   std::vector<odb::dbTechLayerDir> layer_directions_;
   std::vector<odb::dbTechLayer*> db_layers_;
+  std::vector<float> layer_capacitance_per_meter_;
   int num_threads_;
   // When false, nets_ contains borrowed pointers from a parent
   // FastRouteCore (snapshot-batch workers).  Workers must not outlive

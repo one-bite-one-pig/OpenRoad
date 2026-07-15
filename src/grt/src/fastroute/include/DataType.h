@@ -106,6 +106,10 @@ struct FrNet  // A Net is a set of connected MazePoints
   bool isSoftNDR() { return is_soft_ndr_; }
   void setIsResAware(bool res_aware) { is_res_aware_ = res_aware; }
   bool isResAware() { return is_res_aware_; }
+  void setForcedResAware(bool forced) { is_forced_res_aware_ = forced; }
+  bool isForcedResAware() const { return is_forced_res_aware_; }
+  void setTimingSelected(bool selected) { is_timing_selected_ = selected; }
+  bool isTimingSelected() const { return is_timing_selected_; }
   float getTimingWeight() const { return timing_weight_; }
   void setTimingWeight(float timing_weight) { timing_weight_ = timing_weight; }
   float getResistance() { return resistance_; }
@@ -127,6 +131,8 @@ struct FrNet  // A Net is a set of connected MazePoints
   float slack_;
   bool is_soft_ndr_ = false;
   bool is_res_aware_ = false;
+  bool is_forced_res_aware_ = false;
+  bool is_timing_selected_ = false;
   float timing_weight_ = 0.0f;
   float resistance_ = 0.0f;
   int net_length_ = 0;

@@ -1186,6 +1186,7 @@ std::unique_ptr<FastRouteCore> FastRouteCore::buildSnapshotBatchWorker() const
   worker->congestion_file_name_ = congestion_file_name_;
   worker->layer_directions_ = layer_directions_;
   worker->db_layers_ = db_layers_;
+  worker->layer_capacitance_per_meter_ = layer_capacitance_per_meter_;
   worker->en_estimate_parasitics_ = en_estimate_parasitics_;
   worker->resistance_aware_ = resistance_aware_;
   worker->enable_resistance_aware_ = enable_resistance_aware_;
@@ -2499,6 +2500,9 @@ void FastRouteCore::setCongestionReportIterStep(int congestion_report_iter_step)
 void FastRouteCore::setResistanceAware(bool resistance_aware)
 {
   enable_resistance_aware_ = resistance_aware;
+  if (!resistance_aware) {
+    resistance_aware_ = false;
+  }
   en_estimate_parasitics_ = true;
 }
 
@@ -2756,6 +2760,9 @@ void FrNet::reset(odb::dbNet* db_net,
   min_layer_ = min_layer;
   max_layer_ = max_layer;
   slack_ = slack;
+  is_res_aware_ = false;
+  is_forced_res_aware_ = false;
+  is_timing_selected_ = false;
   timing_weight_ = 0.0f;
   resistance_ = 0.0f;
   net_length_ = 0;
