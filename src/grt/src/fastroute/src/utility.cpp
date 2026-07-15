@@ -848,7 +848,7 @@ void FastRouteCore::updateSlacks(float percentage)
   std::vector<std::pair<int, float>> timing_candidates;
   size_t eligible_timing_net_count = 0;
   const int kShortNetThreshold = 3;
-  constexpr float kClockTrunkTimingWeight = 0.5f;
+  constexpr float kClockTrunkTimingWeight = 0.25f;
 
   for (const int net_id : net_ids_) {
     FrNet* net = nets_[net_id];
