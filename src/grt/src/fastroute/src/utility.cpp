@@ -841,6 +841,7 @@ void FastRouteCore::updateSlacks(float percentage)
   resetWorstMetrics();
 
   std::vector<std::pair<int, float>> timing_candidates;
+  size_t eligible_timing_net_count = 0;
   const int kShortNetThreshold = 3;
 
   for (const int net_id : net_ids_) {
@@ -882,7 +883,11 @@ void FastRouteCore::updateSlacks(float percentage)
 
     updateWorstMetrics(net);
     if (!preserve_res_aware) {
-      timing_candidates.emplace_back(net_id, slack);
+      eligible_timing_net_count++;
+      if (is_incremental_grt_
+          || (std::isfinite(slack) && slack < 0.0f)) {
+        timing_candidates.emplace_back(net_id, slack);
+      }
     }
   }
 
@@ -902,9 +907,12 @@ void FastRouteCore::updateSlacks(float percentage)
     return;
   }
 
-  const size_t selected_count = std::min(
-      timing_candidates.size(),
-      static_cast<size_t>(std::ceil(timing_candidates.size() * percentage)));
+  // Limit timing-aware routing to a small critical tail, and never perturb a
+  // data net whose current timing is already clean.
+  const size_t selected_budget = static_cast<size_t>(
+      std::ceil(eligible_timing_net_count * percentage));
+  const size_t selected_count
+      = std::min(timing_candidates.size(), selected_budget);
   for (size_t i = 0; i < selected_count; i++) {
     FrNet* net = nets_[timing_candidates[i].first];
     const float rank_fraction
