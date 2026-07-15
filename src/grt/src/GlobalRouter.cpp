@@ -1571,6 +1571,15 @@ void GlobalRouter::makeFastrouteNet(Net* net)
   fr_net->setForcedResAware(net->isResAware());
   fr_net->setIsResAware(net->isResAware());
   fr_net->setIsClockTrunk(net->isClockNet());
+  if (is_clock && logger_->debugCheck(GRT, "resAware", 2)) {
+    debugPrint(logger_,
+               GRT,
+               "resAware",
+               2,
+               "Clock policy {}: trunk={}",
+               net->getName(),
+               net->isClockNet());
+  }
   // TODO: improve net layer range with more dynamic layer restrictions
   // when there's no room in the specified range
   // See https://github.com/The-OpenROAD-Project/OpenROAD/pull/2893 and
@@ -4441,9 +4450,7 @@ std::vector<Net*> GlobalRouter::findNets(bool init_clock_nets)
     Net* net = addNet(db_net);
     // add clock nets not connected to a leaf first
     if (net) {
-      bool is_non_leaf_clock = isNonLeafClock(net->getDbNet());
-      if (is_non_leaf_clock) {
-        net->setIsClockNet(true);
+      if (net->isClockNet()) {
         clk_nets.push_back(net);
       }
     }
@@ -4451,8 +4458,7 @@ std::vector<Net*> GlobalRouter::findNets(bool init_clock_nets)
 
   std::vector<Net*> non_clk_nets;
   for (auto [ignored, net] : db_net_map_) {
-    bool is_non_leaf_clock = isNonLeafClock(net->getDbNet());
-    if (!is_non_leaf_clock) {
+    if (!net->isClockNet()) {
       non_clk_nets.push_back(net);
     }
   }
@@ -4562,6 +4568,7 @@ void GlobalRouter::updateNetPins(Net* net)
   makeItermPins(net, db_net, grid_->getGridArea());
   makeBtermPins(net, db_net, grid_->getGridArea());
   findPins(net);
+  net->setIsClockNet(isNonLeafClock(db_net));
 }
 
 Net* GlobalRouter::getNet(odb::dbNet* db_net)

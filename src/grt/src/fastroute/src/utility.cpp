@@ -582,8 +582,9 @@ float FastRouteCore::getWireResistance(const int layer,
   // If net has NDR, get the correct width value
   odb::dbTechNonDefaultRule* ndr = net->getDbNet()->getNonDefaultRule();
   if (ndr != nullptr) {
-    odb::dbTechLayerRule* layerRule = ndr->getLayerRule(db_layer);
-    width = layerRule->getWidth();
+    if (odb::dbTechLayerRule* layer_rule = ndr->getLayerRule(db_layer)) {
+      width = layer_rule->getWidth();
+    }
   }
 
   const float layer_width = dbuToMicrons(width);
@@ -870,10 +871,9 @@ void FastRouteCore::updateSlacks(float percentage)
     net->setNetLength(net_size);
 
     const bool is_short_net = net_size <= kShortNetThreshold;
-    const bool is_unconstrained_data
-        = slack == sta::INF && !is_clock && !has_ndr;
+    const bool is_unconstrained_data = slack == sta::INF && !is_clock;
     const bool is_pos_slack_data
-        = !is_incremental_grt_ && slack > 0.0f && !is_clock && !has_ndr;
+        = !is_incremental_grt_ && slack > 0.0f && !is_clock;
 
     // Dont apply res-aware to unconstrained and short nets
     if (is_unconstrained_data || is_short_net || is_pos_slack_data) {

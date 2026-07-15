@@ -103,6 +103,8 @@ or_integration_tests(
   PASSFAIL_TESTS
     congestion_markers_cugr
     congestion_report_file_cugr
+    incremental_clock_trunk_refresh
+    ndr_resaware_filter
     snapshot_batched_bus_route
     snapshot_batched_incremental_state
     snapshot_batched_smoke
