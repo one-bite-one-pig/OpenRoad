@@ -97,6 +97,24 @@ void FastRouteCore::ConvertToFull3DType2()
 // Resistance-aware score calculation to order critical nets
 float FastRouteCore::getResAwareScore(FrNet* net)
 {
+  if (!net->isTimingSelected()) {
+    auto safeRatio = [](const float value, const float scale) {
+      return scale != 0.0f ? value / scale : 0.0f;
+    };
+
+    const float slack_score
+        = net->getSlack() != sta::INF && worst_slack_ != sta::INF
+              ? safeRatio(net->getSlack(), worst_slack_)
+              : 0.0f;
+    return safeRatio(net->getResistance(), worst_net_resistance_)
+           + slack_score * 4.0f
+           + safeRatio(static_cast<float>(net->getNumPins()), worst_fanout_)
+                 * 3.0f
+           + safeRatio(static_cast<float>(net->getNetLength()),
+                       worst_net_length_)
+                 * 2.0f;
+  }
+
   const float kResistanceWeight = 1.0f;
   const float kSlackWeight = 4.5f;
   const float kFanoutWeight = 2.5f;
@@ -832,12 +850,8 @@ void FastRouteCore::updateSlacks(float percentage)
     net->setTimingSelected(false);
     net->setTimingWeight(0.0f);
     net->setIsResAware(net->isForcedResAware());
-    const bool preserve_res_aware
-        = net->isForcedResAware() || net->getDbNet()->getNonDefaultRule()
-          || net->isClock();
-    if (net->getDbNet()->getNonDefaultRule() || net->isClock()) {
-      net->setIsResAware(true);
-    }
+    const bool is_clock_or_ndr
+        = net->getDbNet()->getNonDefaultRule() || net->isClock();
 
     // Calculate net size (steiner size) and route length
     auto& treeedges = sttrees_[net_id].edges;
@@ -859,6 +873,12 @@ void FastRouteCore::updateSlacks(float percentage)
     const float net_resistance = getNetResistanceOnLayer(
         net->getDbNet(), is_3d_step_ ? -1 : net->getMinLayer());
     net->setResistance(net_resistance);
+
+    const bool preserve_res_aware
+        = net->isForcedResAware() || is_clock_or_ndr;
+    if (is_clock_or_ndr) {
+      net->setIsResAware(true);
+    }
 
     updateWorstMetrics(net);
     if (!preserve_res_aware) {
