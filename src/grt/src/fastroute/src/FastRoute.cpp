@@ -2760,6 +2760,7 @@ void FrNet::reset(odb::dbNet* db_net,
   min_layer_ = min_layer;
   max_layer_ = max_layer;
   slack_ = slack;
+  is_clock_trunk_ = false;
   is_res_aware_ = false;
   is_forced_res_aware_ = false;
   is_timing_selected_ = false;

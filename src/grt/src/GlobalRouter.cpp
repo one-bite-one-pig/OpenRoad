@@ -1570,6 +1570,7 @@ void GlobalRouter::makeFastrouteNet(Net* net)
                                      net->areSegmentsRestored());
   fr_net->setForcedResAware(net->isResAware());
   fr_net->setIsResAware(net->isResAware());
+  fr_net->setIsClockTrunk(net->isClockNet());
   // TODO: improve net layer range with more dynamic layer restrictions
   // when there's no room in the specified range
   // See https://github.com/The-OpenROAD-Project/OpenROAD/pull/2893 and

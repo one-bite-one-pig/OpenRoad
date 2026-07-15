@@ -186,10 +186,14 @@ void FastRouteCore::netpinOrderInc()
     const float res_aware_score
         = nets_[netID]->isResAware() ? -getResAwareScore(nets_[netID]) : 0;
 
-    // Prioritize clock nets when using resistance-aware strategy to
-    // better balance clock skew
+    // Prioritize only active clock trunks. Leaf clock nets use the default
+    // routing cost and should retain the normal ordering.
     const int is_clock
-        = (enable_resistance_aware_) ? !nets_[netID]->isClock() : 0;
+        = enable_resistance_aware_
+                  && nets_[netID]->isClockTrunk()
+                  && nets_[netID]->isResAware()
+              ? 0
+              : 1;
 
     tree_order_pv_.push_back(
         {netID, xmin, length_per_pin, ndr_priority, res_aware_score, is_clock});
@@ -822,8 +826,9 @@ void FastRouteCore::setIncrementalGrt(bool is_incremental)
   is_incremental_grt_ = is_incremental;
 }
 
-// Select timing-critical data nets for timing-aware layer costs. Clock and NDR
-// nets retain the upstream resistance-aware behavior.
+// Select timing-critical data nets and non-leaf clock trunks for timing-aware
+// layer costs. Leaf clock nets use default routing; forced and non-clock NDR
+// nets retain resistance-only behavior.
 void FastRouteCore::updateSlacks(float percentage)
 {
   // Check if liberty file was loaded before calculating slack
@@ -843,6 +848,7 @@ void FastRouteCore::updateSlacks(float percentage)
   std::vector<std::pair<int, float>> timing_candidates;
   size_t eligible_timing_net_count = 0;
   const int kShortNetThreshold = 3;
+  constexpr float kClockTrunkTimingWeight = 0.5f;
 
   for (const int net_id : net_ids_) {
     FrNet* net = nets_[net_id];
@@ -851,8 +857,9 @@ void FastRouteCore::updateSlacks(float percentage)
     net->setTimingSelected(false);
     net->setTimingWeight(0.0f);
     net->setIsResAware(net->isForcedResAware());
-    const bool is_clock_or_ndr
-        = net->getDbNet()->getNonDefaultRule() || net->isClock();
+    const bool is_clock = net->isClock();
+    const bool is_clock_trunk = net->isClockTrunk();
+    const bool has_ndr = net->getDbNet()->getNonDefaultRule() != nullptr;
 
     // Calculate net size (steiner size) and route length
     auto& treeedges = sttrees_[net_id].edges;
@@ -862,12 +869,14 @@ void FastRouteCore::updateSlacks(float percentage)
     }
     net->setNetLength(net_size);
 
-    bool is_short_net = net_size <= kShortNetThreshold;
-    bool is_unconstrained_net = slack == sta::INF && !net->isClock();
-    bool is_pos_slack = !is_incremental_grt_ && slack > 0 && !net->isClock();
+    const bool is_short_net = net_size <= kShortNetThreshold;
+    const bool is_unconstrained_data
+        = slack == sta::INF && !is_clock && !has_ndr;
+    const bool is_pos_slack_data
+        = !is_incremental_grt_ && slack > 0.0f && !is_clock && !has_ndr;
 
     // Dont apply res-aware to unconstrained and short nets
-    if (is_unconstrained_net || is_short_net || is_pos_slack) {
+    if (is_unconstrained_data || is_short_net || is_pos_slack_data) {
       continue;
     }
 
@@ -875,19 +884,46 @@ void FastRouteCore::updateSlacks(float percentage)
         net->getDbNet(), is_3d_step_ ? -1 : net->getMinLayer());
     net->setResistance(net_resistance);
 
-    const bool preserve_res_aware
-        = net->isForcedResAware() || is_clock_or_ndr;
-    if (is_clock_or_ndr) {
+    if (is_incremental_grt_) {
+      updateWorstMetrics(net);
+      if (is_clock || has_ndr) {
+        net->setIsResAware(true);
+      } else if (!net->isForcedResAware()) {
+        timing_candidates.emplace_back(net_id, slack);
+      }
+      continue;
+    }
+
+    // Explicit RSZ reroute requests always retain their resistance-only cost.
+    if (net->isForcedResAware()) {
+      updateWorstMetrics(net);
+      continue;
+    }
+
+    if (is_clock) {
+      // CTS trunks benefit from lower resistance, but a capacitance term keeps
+      // them from climbing through expensive via stacks to high-cap layers.
+      if (is_clock_trunk) {
+        net->setIsResAware(true);
+        net->setTimingSelected(true);
+        net->setTimingWeight(kClockTrunkTimingWeight);
+        updateWorstMetrics(net);
+      }
+      continue;
+    }
+
+    // Preserve resistance-only behavior for non-clock NDR nets. The NDR edge
+    // width and spacing costs remain active independently of this flag.
+    if (has_ndr) {
       net->setIsResAware(true);
+      updateWorstMetrics(net);
+      continue;
     }
 
     updateWorstMetrics(net);
-    if (!preserve_res_aware) {
-      eligible_timing_net_count++;
-      if (is_incremental_grt_
-          || (std::isfinite(slack) && slack < 0.0f)) {
-        timing_candidates.emplace_back(net_id, slack);
-      }
+    eligible_timing_net_count++;
+    if (std::isfinite(slack) && slack < 0.0f) {
+      timing_candidates.emplace_back(net_id, slack);
     }
   }
 

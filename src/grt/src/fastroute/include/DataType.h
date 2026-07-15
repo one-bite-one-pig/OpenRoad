@@ -69,6 +69,11 @@ struct Segment  // A Segment is a 2-pin connection
 struct FrNet  // A Net is a set of connected MazePoints
 {
   bool isClock() const { return is_clock_; }
+  void setIsClockTrunk(bool is_clock_trunk)
+  {
+    is_clock_trunk_ = is_clock_trunk;
+  }
+  bool isClockTrunk() const { return is_clock_trunk_; }
   bool isCritical() { return is_critical_; }
   float getSlack() const { return slack_; }
   odb::dbNet* getDbNet() const { return db_net_; }
@@ -123,6 +128,7 @@ struct FrNet  // A Net is a set of connected MazePoints
   std::vector<int> pin_y_;  // y coordinates of pins
   std::vector<int> pin_l_;  // l coordinates of pins
   bool is_clock_;           // flag that indicates if net is a clock net
+  bool is_clock_trunk_ = false;
   bool is_critical_;
   int driver_idx_;
   int8_t edge_cost_;
