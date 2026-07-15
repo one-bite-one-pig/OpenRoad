@@ -321,7 +321,7 @@ class FastRouteCore
   double dbuToMicrons(int dbu);
   odb::Rect globalRoutingToBox(const GSegment& route);
   NetRouteMap getRoutes();
-  void updateSlacks(float percentage = 0.15);
+  void updateSlacks(float percentage = 0.10);
   void preProcessTechLayers();
   odb::dbTechLayer* getTechLayer(int layer, bool is_via);
 
@@ -601,8 +601,10 @@ class FastRouteCore
 
   // Resistance-aware related functions
   float getWireResistance(int layer, int length, FrNet* net);
+  float getWireCapacitance(int layer, int length, FrNet* net);
   float getViaResistance(int from_layer, int to_layer);
   int getWireCost(int layer, int length, FrNet* net);
+  int getWireCapCost(int layer, int length, FrNet* net);
   int getViaCost(int from_layer, int to_layer);
   float getResAwareScore(FrNet* net);
   void updateWorstMetrics(FrNet* net);

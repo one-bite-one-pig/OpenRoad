@@ -20,6 +20,7 @@
 #include "FastRoute.h"
 #include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
+#include "est/EstimateParasitics.h"
 #include "est/ParasiticsService.h"
 #include "grt/GRoute.h"
 #include "odb/db.h"
@@ -97,15 +98,27 @@ void FastRouteCore::ConvertToFull3DType2()
 float FastRouteCore::getResAwareScore(FrNet* net)
 {
   const float kResistanceWeight = 1.0f;
-  const float kSlackWeight = 4.0f;
-  const float kFanoutWeight = 3.0f;
-  const float kNetLengthWeight = 2.0f;
+  const float kSlackWeight = 4.5f;
+  const float kFanoutWeight = 2.5f;
+  const float kNetLengthWeight = 1.5f;
 
-  return net->getResistance() / worst_net_resistance_ * kResistanceWeight
-         + net->getSlack() / worst_slack_ * kSlackWeight
-         + static_cast<float>(net->getNumPins()) / worst_fanout_ * kFanoutWeight
-         + static_cast<float>(net->getNetLength()) / worst_net_length_
-               * kNetLengthWeight;
+  auto normalize = [](const float value, const float worst) {
+    if (worst <= 0.0f) {
+      return 0.0f;
+    }
+    return std::clamp(value / worst, 0.0f, 1.0f);
+  };
+
+  const float resistance_score
+      = normalize(net->getResistance(), worst_net_resistance_);
+  const float timing_score = net->getTimingWeight();
+  const float fanout_score
+      = normalize(static_cast<float>(net->getNumPins()), worst_fanout_);
+  const float length_score
+      = normalize(static_cast<float>(net->getNetLength()), worst_net_length_);
+
+  return resistance_score * kResistanceWeight + timing_score * kSlackWeight
+         + fanout_score * kFanoutWeight + length_score * kNetLengthWeight;
 }
 
 static bool compareNetPins(const OrderNetPin& a, const OrderNetPin& b)
@@ -543,6 +556,53 @@ float FastRouteCore::getWireResistance(const int layer,
   return final_resistance;
 }
 
+float FastRouteCore::getWireCapacitance(const int layer,
+                                        const int length,
+                                        FrNet* net)
+{
+  if (layer < net->getMinLayer() || layer > net->getMaxLayer()) {
+    return BIG_INT;
+  }
+
+  odb::dbTechLayer* db_layer = getTechLayer(layer, false);
+  double res_per_meter = 0.0;
+  double cap_per_meter = 0.0;
+
+  if (auto* service = service_registry_->find<est::ParasiticsService>()) {
+    if (auto* estimator = dynamic_cast<est::EstimateParasitics*>(service);
+        estimator != nullptr && !sta_->scenes().empty()) {
+      estimator->layerRC(
+          db_layer, sta_->scenes().front(), res_per_meter, cap_per_meter);
+    }
+  }
+
+  const float wire_length_meters = dbuToMicrons(length) * 1.0e-6f;
+  if (cap_per_meter > 0.0) {
+    return static_cast<float>(cap_per_meter * wire_length_meters);
+  }
+
+  int width = db_layer->getWidth();
+  double layer_cap = db_layer->getCapacitance();
+  double edge_cap = db_layer->getEdgeCapacitance();
+
+  odb::dbTechNonDefaultRule* ndr = net->getDbNet()->getNonDefaultRule();
+  if (ndr != nullptr) {
+    if (odb::dbTechLayerRule* layer_rule = ndr->getLayerRule(db_layer)) {
+      width = layer_rule->getWidth();
+      if (layer_rule->getCapacitance() > 0.0) {
+        layer_cap = layer_rule->getCapacitance();
+      }
+      if (layer_rule->getEdgeCapacitance() > 0.0) {
+        edge_cap = layer_rule->getEdgeCapacitance();
+      }
+    }
+  }
+
+  const float layer_width = dbuToMicrons(width);
+  const float cap_pf_per_micron = layer_width * layer_cap + 2.0 * edge_cap;
+  return cap_pf_per_micron * dbuToMicrons(length);
+}
+
 // Get wire resistance cost for a specific metal layer
 int FastRouteCore::getWireCost(const int layer, const int length, FrNet* net)
 {
@@ -560,6 +620,41 @@ int FastRouteCore::getWireCost(const int layer, const int length, FrNet* net)
 
   const float final_resistance = getWireResistance(layer, length, net);
   const double cost = std::ceil(final_resistance / default_resistance);
+  return static_cast<int>(std::min<double>(cost, BIG_INT));
+}
+
+int FastRouteCore::getWireCapCost(const int layer, const int length, FrNet* net)
+{
+  if (!resistance_aware_) {
+    return 0;
+  }
+
+  const int ref_layer
+      = std::clamp(net->getMinLayer(), 0, num_layers_ - 1);
+
+  const float final_cap = getWireCapacitance(layer, length, net);
+  const float ref_cap = getWireCapacitance(ref_layer, length, net);
+  if (final_cap <= 0.0f || ref_cap <= 0.0f || final_cap >= BIG_INT
+      || ref_cap >= BIG_INT) {
+    return 0;
+  }
+
+  const float extra_cap = final_cap - ref_cap;
+  if (extra_cap <= 0.0f) {
+    return 0;
+  }
+
+  const float length_microns = dbuToMicrons(length);
+  if (length_microns <= 0.0f) {
+    return 0;
+  }
+
+  const float ref_cap_per_micron = ref_cap / length_microns;
+  if (ref_cap_per_micron <= 0.0f) {
+    return 0;
+  }
+
+  const double cost = std::ceil(extra_cap / ref_cap_per_micron);
   return static_cast<int>(std::min<double>(cost, BIG_INT));
 }
 
@@ -688,12 +783,15 @@ void FastRouteCore::updateSlacks(float percentage)
   resetWorstMetrics();
 
   std::vector<std::pair<int, float>> res_aware_list;
+  std::vector<int> res_aware_candidates;
+  float best_candidate_slack = std::numeric_limits<float>::lowest();
   const int kShortNetThreshold = 3;
 
   for (const int net_id : net_ids_) {
     FrNet* net = nets_[net_id];
     float slack = getNetSlack(net->getDbNet());
     net->setSlack(slack);
+    net->setTimingWeight(0.0f);
 
     // Calculate net size (steiner size) and route length
     auto& treeedges = sttrees_[net_id].edges;
@@ -717,11 +815,37 @@ void FastRouteCore::updateSlacks(float percentage)
     net->setResistance(net_resistance);
 
     updateWorstMetrics(net);
+    res_aware_candidates.push_back(net_id);
+    if (slack != sta::INF) {
+      best_candidate_slack = std::max(best_candidate_slack, slack);
+    }
 
     // Enable res-aware for clock and NDR nets by default
     if (net->getDbNet()->getNonDefaultRule() || net->isClock()) {
       net->setIsResAware(true);
     }
+  }
+
+  const float slack_range = best_candidate_slack - worst_slack_;
+  for (const int net_id : res_aware_candidates) {
+    FrNet* net = nets_[net_id];
+    float timing_weight = 0.0f;
+
+    if (net->isClock()) {
+      timing_weight = 1.0f;
+    } else if (net->getSlack() != sta::INF) {
+      // Map the candidate slack range to a criticality score: worst slack is
+      // 1.0 and the least critical candidate is 0.0.  This curve keeps strong
+      // pressure on the worst tail while still giving medium-negative slack
+      // nets enough weight to improve aggregate TNS.
+      const float criticality = slack_range > 0.0f
+                                    ? (best_candidate_slack - net->getSlack())
+                                          / slack_range
+                                    : 1.0f;
+      timing_weight = criticality * (0.25f + 0.75f * criticality);
+      timing_weight = std::clamp(timing_weight, 0.0f, 1.0f);
+    }
+    net->setTimingWeight(timing_weight);
 
     // Ignore nets that already are res-aware
     if (!net->isResAware()) {
@@ -729,7 +853,7 @@ void FastRouteCore::updateSlacks(float percentage)
     }
   }
 
-  // Sort by worst slack and ID
+  // Sort by timing/resistance score and ID.
   auto compareSlack
       = [](const std::pair<int, float> a, const std::pair<int, float> b) {
           return std::tie(a.second, a.first) < std::tie(b.second, b.first);
@@ -748,13 +872,14 @@ void FastRouteCore::updateSlacks(float percentage)
         && !is_incremental_grt_) {
       logger_->report(
           "{} Net {} - Fanout: {} - Length: {} - Resistance: {} - Slack: {} - "
-          "Score: {}",
+          "Timing weight: {} - Score: {}",
           i,
           nets_[res_aware_list[i].first]->getName(),
           nets_[res_aware_list[i].first]->getNumPins(),
           nets_[res_aware_list[i].first]->getNetLength(),
           nets_[res_aware_list[i].first]->getResistance(),
           nets_[res_aware_list[i].first]->getSlack(),
+          nets_[res_aware_list[i].first]->getTimingWeight(),
           res_aware_list[i].second);
     }
     nets_[res_aware_list[i].first]->setIsResAware(true);
@@ -802,6 +927,46 @@ void FastRouteCore::assignEdge(const int netID,
   if (enable_resistance_aware_) {
     resistance_aware_ = net->isResAware();
   }
+
+  constexpr float kTimingWireCostMultiplier = 0.0f;
+  constexpr float kTimingCapCostMultiplier = 3.0f;
+  constexpr float kTimingViaResistanceCostMultiplier = 1.5f;
+  constexpr float kTimingViaBaseCostMultiplier = 3.0f;
+  constexpr float kDpTimingWeightThreshold = 0.50f;
+  const float timing_weight
+      = resistance_aware_
+            ? std::clamp((net->getTimingWeight() - kDpTimingWeightThreshold)
+                             / (1.0f - kDpTimingWeightThreshold),
+                         0.0f,
+                         1.0f)
+            : 0.0f;
+  const float cap_weight
+      = resistance_aware_ ? std::clamp(net->getTimingWeight(), 0.0f, 1.0f)
+                          : 0.0f;
+
+  auto scaleTimingCost = [&](const int cost, const float multiplier) {
+    if (cost <= 0 || timing_weight <= 0.0f) {
+      return cost;
+    }
+
+    const double scaled_cost
+        = std::ceil(cost * (1.0 + multiplier * timing_weight));
+    return static_cast<int>(std::min<double>(scaled_cost, BIG_INT));
+  };
+
+  auto getTimingWireCost = [&](const int layer, const int length) {
+    const int wire_cost = scaleTimingCost(
+        getWireCost(layer, length, net), kTimingWireCostMultiplier);
+    const int cap_cost = getWireCapCost(layer, length, net);
+    if (cap_cost <= 0 || cap_weight <= 0.0f) {
+      return wire_cost;
+    }
+
+    const double scaled_cap_cost
+        = std::ceil(cap_cost * kTimingCapCostMultiplier * cap_weight);
+    return static_cast<int>(
+        std::min<double>(wire_cost + scaled_cap_cost, BIG_INT));
+  };
 
   for (k = 0; k < routelen; k++) {
     int best_cost = std::numeric_limits<int>::min();
@@ -937,8 +1102,12 @@ void FastRouteCore::assignEdge(const int netID,
   auto propagateVia = [&](int k_cur, bool is_endpoint) {
     for (int l = 0; l < num_layers_; l++) {
       for (int i = 0; i < num_layers_; i++) {
-        const int via_resistance_cost = (i != l) ? getViaCost(l, i) : 0;
-        const int base_cost = abs(i - l) * (is_endpoint ? 2 : 3);
+        const int via_resistance_cost
+            = scaleTimingCost((i != l) ? getViaCost(l, i) : 0,
+                              kTimingViaResistanceCostMultiplier);
+        const int base_cost = scaleTimingCost(
+            abs(i - l) * (is_endpoint ? 2 : 3),
+            kTimingViaBaseCostMultiplier);
         const int total_via_cost = via_resistance_cost + base_cost;
         if (gridD[i][k_cur] > gridD[l][k_cur] + total_via_cost) {
           gridD[i][k_cur] = gridD[l][k_cur] + total_via_cost;
@@ -953,8 +1122,12 @@ void FastRouteCore::assignEdge(const int netID,
   auto applyTerminalVia = [&](int k_term) {
     for (int l = 0; l < num_layers_; l++) {
       for (int i = 0; i < num_layers_; i++) {
-        const int via_resistance_cost = (i != l) ? getViaCost(l, i) : 0;
-        const int total_cost = via_resistance_cost + abs(i - l);
+        const int via_resistance_cost
+            = scaleTimingCost((i != l) ? getViaCost(l, i) : 0,
+                              kTimingViaResistanceCostMultiplier);
+        const int base_cost
+            = scaleTimingCost(abs(i - l), kTimingViaBaseCostMultiplier);
+        const int total_cost = via_resistance_cost + base_cost;
         if (gridD[i][k_term] > gridD[l][k_term] + total_cost) {
           gridD[i][k_term] = gridD[l][k_term] + total_cost;
           via_link[i][k_term] = l;
@@ -1005,7 +1178,8 @@ void FastRouteCore::assignEdge(const int netID,
       propagateVia(k, k == 0);
       for (int l = 0; l < num_layers_; l++) {
         if (layer_grid[l][k] >= net->getLayerEdgeCost(l)) {
-          gridD[l][k + 1] = gridD[l][k] + 1 + getWireCost(l, tile_size_, net);
+          gridD[l][k + 1] = gridD[l][k] + 1
+                             + getTimingWireCost(l, tile_size_);
         } else if (layer_grid[l][k] == std::numeric_limits<int>::min()
                    || l < net->getMinLayer() || l > net->getMaxLayer()) {
           // when the layer orientation doesn't match the edge orientation,
@@ -1083,7 +1257,8 @@ void FastRouteCore::assignEdge(const int netID,
       propagateVia(k, k == routelen);
       for (int l = 0; l < num_layers_; l++) {
         if (layer_grid[l][k - 1] >= net->getLayerEdgeCost(l)) {
-          gridD[l][k - 1] = gridD[l][k] + 1 + getWireCost(l, tile_size_, net);
+          gridD[l][k - 1] = gridD[l][k] + 1
+                             + getTimingWireCost(l, tile_size_);
         } else if (layer_grid[l][k] == std::numeric_limits<int>::min()
                    || l < net->getMinLayer() || l > net->getMaxLayer()) {
           // when the layer orientation doesn't match the edge orientation,

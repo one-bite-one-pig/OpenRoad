@@ -106,6 +106,8 @@ struct FrNet  // A Net is a set of connected MazePoints
   bool isSoftNDR() { return is_soft_ndr_; }
   void setIsResAware(bool res_aware) { is_res_aware_ = res_aware; }
   bool isResAware() { return is_res_aware_; }
+  float getTimingWeight() const { return timing_weight_; }
+  void setTimingWeight(float timing_weight) { timing_weight_ = timing_weight; }
   float getResistance() { return resistance_; }
   void setResistance(float resistance) { resistance_ = resistance; }
   int getNetLength() { return net_length_; }
@@ -125,8 +127,9 @@ struct FrNet  // A Net is a set of connected MazePoints
   float slack_;
   bool is_soft_ndr_ = false;
   bool is_res_aware_ = false;
-  float resistance_;
-  int net_length_;
+  float timing_weight_ = 0.0f;
+  float resistance_ = 0.0f;
+  int net_length_ = 0;
   // Non-null when an NDR has been applied to the net.
   std::unique_ptr<std::vector<int8_t>> edge_cost_per_layer_;
 };
